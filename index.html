@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <title>Toimistohiippailu - Pohjapiirros</title>
+    <style>
+        body {
+            background-color: #1e1e2e;
+            color: #cdd6f4;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        canvas {
+            background-color: #f4f1ea;
+            border: 4px solid #45475a;
+            border-radius: 8px;
+        }
+        #ui {
+            width: 800px;
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .controls {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #a6adc8;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div id="taskText">Tehtävä: Nouda saapunut tilaus ULKO-OVELTA</div>
+        <div id="roomStatus">Koillishuone: LOUNASTILA</div>
+        <div id="scoreText">Pisteet: 0</div>
+    </div>
+
+    <canvas id="gameCanvas" width="800" height="520"></canvas>
+    <div class="controls">Liiku: WASD / Nuolet | Hiivi (pienempi huomioalue): SHIFT | Uudelleen: R</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let score = 0;
+let gameOver = false;
+let task = 'DOOR';
+let waitProgress = 0;
+const WAIT_TIME = 100;
+
+let roomTimer = 0;
+let isMeeting = false;
+const ROOM_CYCLE = 650;
+
+const player = { x: 115, y: 245, radius: 11, speed: 3, sneaking: false };
+  const walls = [
+    // Ulkoseinät (aukko etelässä keskellä ulko-ovelle)
+    { x: 140, y: 110, w: 540, h: 10 }, // Pohjoinen
+    { x: 140, y: 110, w: 10, h: 100 }, // Länsi ylä
+    { x: 140, y: 280, w: 10, h: 110 }, // Länsi ala
+    { x: 670, y: 110, w: 10, h: 280 }, // Itä
+    { x: 140, y: 380, w: 280, h: 10 }, // Etelä vasen
+    { x: 490, y: 380, w: 190, h: 10 }, // Etelä oikea
+
+    // Pohjoisrivin huoneiden väliseinät (5 huonetta)
+    { x: 180, y: 50, w: 390, h: 10 },
+    { x: 180, y: 50, w: 10, h: 120 },
+    { x: 255, y: 50, w: 10, h: 120 },
+    { x: 335, y: 50, w: 10, h: 120 },
+    { x: 410, y: 50, w: 10, h: 120 },
+    { x: 495, y: 50, w: 10, h: 120 },
+    { x: 565, y: 50, w: 10, h: 120 },
+
+    // Länsikoppi (vasen keskellä)
+    { x: 85, y: 205, w: 60, h: 10 },
+    { x: 85, y: 275, w: 60, h: 10 },
+    { x: 85, y: 205, w: 10, h: 80 },
+
+    // Eteläkopit (vasen ala & ulko-oven tuulikaappi)
+    { x: 160, y: 440, w: 110, h: 10 },
+    { x: 160, y: 340, w: 10, h: 110 },
+    { x: 260, y: 340, w: 10, h: 110 },
+
+    // Ulko-oven syvennys (etelä keskellä)
+    { x: 420, y: 380, w: 10, h: 85 },
+    { x: 490, y: 380, w: 10, h: 85 },
+    { x: 420, y: 460, w: 80, h: 10 }
+];
+
+const zones = {
+    desk: { x: 98, y: 218, w: 42, h: 54, color: '#89b4fa', label: 'OMA' },
+    door: { x: 432, y: 405, w: 56, h: 50, color: '#f9e2af', label: 'ULKO-OVI' },
+    printer: { x: 192, y: 65, w: 60, h: 45, color: '#fab387', label: 'TULOSTIN' },
+    lunch: { x: 580, y: 65, w: 85, h: 95, color: '#a6e3a1', label: 'LOUNAS / PALAVERI' }
+};
+
+const npcs = [
+    { name: 'Johtaja (M)', x: 380, y: 210, vx: 2.2, vy: 0, minX: 170, maxX: 640, color: '#f38ba8', viewDist: 105, angle: 0 },
+    { name: 'Assistentti (N)', x: 530, y: 310, vx: -1.8, vy: 0, minX: 290, maxX: 640, color: '#cba6f7', viewDist: 95, angle: Math.PI },
+    { name: 'Lähetti / Myyjä (M)', x: 455, y: 250, vx: 0, vy: 1.6, minY: 180, maxY: 360, color: '#94e2d5', viewDist: 85, angle: Math.PI/2 }
+];
+
+const keys = {};
+window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+  function rectCircleColliding(circle, rect) {
+    let distX = Math.abs(circle.x - rect.x - rect.w / 2);
+    let distY = Math.abs(circle.y - rect.y - rect.h / 2);
+    if (distX > (rect.w / 2 + circle.radius) || distY > (rect.h / 2 + circle.radius)) return false;
+    if (distX <= (rect.w / 2) || distY <= (rect.h / 2)) return true;
+    let dx = distX - rect.w / 2;
+    let dy = distY - rect.h / 2;
+    return (dx * dx + dy * dy <= (circle.radius * circle.radius));
+}
+
+function isInsideZone(p, z) {
+    return p.x > z.x && p.x < z.x + z.w && p.y > z.y && p.y < z.y + z.h;
+}
+
+function update() {
+    if (gameOver) {
+        if (keys['r']) location.reload();
+        return;
+    }
+
+    roomTimer++;
+    if (roomTimer >= ROOM_CYCLE) {
+        roomTimer = 0;
+        isMeeting = !isMeeting;
+        const statusEl = document.getElementById('roomStatus');
+        statusEl.textContent = isMeeting ? 'Koillishuone: PALAVERI!' : 'Koillishuone: LOUNASTILA';
+        statusEl.style.color = isMeeting ? '#f38ba8' : '#a6e3a1';
+    }
+
+    if (isMeeting && isInsideZone(player, zones.lunch)) {
+        endGame('Jäit nalkkiin palaverihuoneeseen kesken kokouksen!');
+    }
+
+    player.sneaking = keys['shift'];
+    let speed = player.sneaking ? 1.5 : player.speed;
+    let nextX = player.x;
+    let nextY = player.y;
+
+    if (keys['w'] || keys['arrowup']) nextY -= speed;
+    if (keys['s'] || keys['arrowdown']) nextY += speed;
+    if (keys['a'] || keys['arrowleft']) nextX -= speed;
+    if (keys['d'] || keys['arrowright']) nextX += speed;
+
+    let hitWall = false;
+    for (let w of walls) {
+        if (rectCircleColliding({ x: nextX, y: nextY, radius: player.radius }, w)) {
+            hitWall = true;
+            break;
+        }
+    }
+    if (!hitWall) {
+        player.x = nextX;
+        player.y = nextY;
+    }
+
+    const taskEl = document.getElementById('taskText');
+    if (task === 'DOOR' && isInsideZone(player, zones.door)) {
+        waitProgress++;
+        if (waitProgress >= WAIT_TIME) {
+            task = 'PRINTER';
+            waitProgress = 0;
+            taskEl.textContent = 'Tehtävä: Vie tilaus tulostimelle (luode)';
+        }
+    } else if (task === 'PRINTER' && isInsideZone(player, zones.printer)) {
+        waitProgress++;
+        if (waitProgress >= WAIT_TIME) {
+            task = 'LUNCH';
+            waitProgress = 0;
+            taskEl.textContent = 'Tehtävä: Käy lounaalla (koillinen, kun vapaa)';
+        }
+    } else if (task === 'LUNCH' && isInsideZone(player, zones.lunch) && !isMeeting) {
+        waitProgress++;
+        if (waitProgress >= WAIT_TIME) {
+            task = 'DESK';
+            waitProgress = 0;
+            taskEl.textContent = 'Tehtävä: Palaa omaan koppiin (länsi)';
+        }
+    } else if (task === 'DESK' && isInsideZone(player, zones.desk)) {
+        score += 150;
+        document.getElementById('scoreText').textContent = 'Pisteet: ' + score;
+        task = 'DOOR';
+        taskEl.textContent = 'Uusi lähetys! Hae tilaus ULKO-OVELTA';
+    } else {
+        waitProgress = Math.max(0, waitProgress - 1);
+    }
+for (let npc of npcs) {
+        npc.x += npc.vx;
+        npc.y += npc.vy;
+
+        if (npc.vx !== 0) {
+            if (npc.x > npc.maxX || npc.x < npc.minX) npc.vx *= -1;
+            npc.angle = npc.vx > 0 ? 0 : Math.PI;
+        }
+        if (npc.vy !== 0) {
+            if (npc.y > npc.maxY || npc.y < npc.minY) npc.vy *= -1;
+            npc.angle = npc.vy > 0 ? Math.PI / 2 : -Math.PI / 2;
+        }
+
+        let dx = player.x - npc.x;
+        let dy = player.y - npc.y;
+        let dist = Math.hypot(dx, dy);
+        let effectiveView = player.sneaking ? npc.viewDist * 0.6 : npc.viewDist;
+
+        if (dist < effectiveView) {
+            let angleToPlayer = Math.atan2(dy, dx);
+            let diff = Math.abs(angleToPlayer - npc.angle);
+            if (diff > Math.PI) diff = 2 * Math.PI - diff;
+            if (diff < 0.42) {
+                endGame(npc.name + ' nappasi sinut keskikäytävällä!');
+            }
+        }
+    }
+}
+
+function endGame(reason) {
+    gameOver = true;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#f38ba8';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('JÄIT KIINNI!', canvas.width / 2, canvas.height / 2 - 20);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '18px sans-serif';
+    ctx.fillText(reason, canvas.width / 2, canvas.height / 2 + 20);
+    ctx.fillText('Paina R-näppäintä yrittääksesi uudelleen', canvas.width / 2, canvas.height / 2 + 60);
+}
+
+function draw() {
+    if (gameOver) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (let key of ['desk', 'door', 'printer', 'lunch']) {
+        let z = zones[key];
+        ctx.fillStyle = (key === 'lunch' && isMeeting) ? '#f38ba8' : z.color;
+        ctx.fillRect(z.x, z.y, z.w, z.h);
+        ctx.fillStyle = '#1e1e2e';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(z.label, z.x + z.w / 2, z.y + z.h / 2 + 4);
+    }
+
+    ctx.fillStyle = '#1e1e2e';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillText('ULKO-OVI', 460, 490);
+
+    ctx.fillStyle = '#313244';
+    for (let w of walls) {
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+    }
+
+    for (let npc of npcs) {
+        ctx.beginPath();
+        ctx.moveTo(npc.x, npc.y);
+        let viewDist = player.sneaking ? npc.viewDist * 0.6 : npc.viewDist;
+        ctx.arc(npc.x, npc.y, viewDist, npc.angle - 0.42, npc.angle + 0.42);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(243, 139, 168, 0.3)';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(npc.x, npc.y, 12, 0, Math.PI * 2);
+        ctx.fillStyle = npc.color;
+        ctx.fill();
+        ctx.strokeStyle = '#1e1e2e';
+        ctx.stroke();
+
+        ctx.fillStyle = '#1e1e2e';
+        ctx.font = '11px sans-serif';
+        ctx.fillText(npc.name, npc.x, npc.y - 16);
+    }
+
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+    ctx.fillStyle = player.sneaking ? '#45475a' : '#1e66f5';
+    ctx.fill();
+
+    if (waitProgress > 0) {
+        ctx.fillStyle = '#1e1e2e';
+        ctx.fillRect(player.x - 20, player.y - 24, 40, 6);
+        ctx.fillStyle = '#a6e3a1';
+        ctx.fillRect(player.x - 20, player.y - 24, 40 * (waitProgress / WAIT_TIME), 6);
+    }
+}
+
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
+
